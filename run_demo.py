@@ -10,6 +10,12 @@ import time
 from models.pipeline import EnhancedTextToVideoPipeline
 
 
+def format_psnr(val):
+    if val is None:
+        return "∞ dB (Identical)"
+    return f"{val:.2f} dB"
+
+
 def print_comparison_table(res_baseline: dict, res_proposed: dict):
     m_b = res_baseline["metrics"]
     m_p = res_proposed["metrics"]
@@ -17,8 +23,8 @@ def print_comparison_table(res_baseline: dict, res_proposed: dict):
     speedup = m_b["interp_latency_sec"] / max(1e-4, m_p["interp_latency_sec"])
     flicker_diff = ((m_b["flicker"] - m_p["flicker"]) / max(1e-4, m_b["flicker"])) * 100.0
 
-    psnr_b_str = f"{m_b['psnr']:.2f} dB"
-    psnr_p_str = f"{m_p['psnr']:.2f} dB"
+    psnr_b_str = format_psnr(m_b["psnr"])
+    psnr_p_str = format_psnr(m_p["psnr"])
     
     flicker_str = f"{flicker_diff:.1f}% Smoother"
     speedup_str = f"{speedup:.2f}x Faster"

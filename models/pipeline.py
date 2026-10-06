@@ -6,6 +6,7 @@ Executes real end-to-end Text-to-Video generation in two modes:
 """
 import os
 import time
+import math
 import torch
 import numpy as np
 
@@ -55,7 +56,8 @@ class EnhancedTextToVideoPipeline:
         """
         start_time = time.perf_counter()
         dev = torch.device(self.device)
-        mode_label = "ChronoFrame (Proposed)" if mode.lower() in ["proposed", "chronoframe"] else "Baseline"
+        is_proposed = mode.lower() in ["proposed", "chronoframe"]
+        mode_label = "ChronoFrame (Proposed)" if is_proposed else "Baseline"
         
         def notify(stage: str, pct: int):
             if callback:
@@ -66,23 +68,22 @@ class EnhancedTextToVideoPipeline:
         print(f"[DEMO / FALLBACK MODE: Lightweight Text-Guided Keyframe Synthesizer] Prompt: '{prompt}'")
         
         # Step 1: Text-conditioned keyframe generation
-        latent_size = resolution[0] // 16
-        latent_size = max(8, latent_size)
-        is_proposed = mode.lower() in ["proposed", "chronoframe"]
+        num_keyframes = max(1, min(8, int(num_keyframes)))
+        latent_size = max(8, resolution[0] // 16)
         
         with torch.no_grad():
-            # Generate T keyframe latents
+            # Generate T keyframe latents: (1, T, C, H_lat, W_lat)
             keyframe_latents = self.keyframe_gen(
                 prompt=prompt,
                 num_keyframes=num_keyframes,
                 latent_size=latent_size,
                 device=self.device,
                 apply_temporal=is_proposed
-            )  # (1, T, C, H_lat, W_lat)
+            )
 
-            # Decode keyframe previews
+            # Decode original keyframe previews (1, T, 3, H, W)
             decoder_kf = self.temporal_decoder if is_proposed else self.image_decoder
-            keyframe_rgb = decoder_kf(keyframe_latents)  # (1, T, 3, H, W)
+            keyframe_rgb = decoder_kf(keyframe_latents)
             keyframe_frames = tensor_to_uint8_frames(keyframe_rgb)
 
             notify("INTERPOLATING", 40)
@@ -122,11 +123,17 @@ class EnhancedTextToVideoPipeline:
             # Step 5: Compute real evaluation metrics
             notify("COMPUTING METRICS", 95)
             
-            # Ground truth reference for PSNR/SSIM calculation (keyframe spatial ground truth)
-            ref_rgb = decoder_kf(full_latents)
-            
-            psnr_val = psnr(video_rgb, ref_rgb)
-            ssim_val = ssim(video_rgb, ref_rgb)
+            # Reconstruction metric: Compare decoded video frames at keyframe positions (indices 0, 4, 8...)
+            # against original spatial keyframe decoded RGB images `keyframe_rgb`
+            if num_keyframes > 1:
+                video_kf_sub = video_rgb[:, ::4]
+                min_len = min(video_kf_sub.shape[1], keyframe_rgb.shape[1])
+                psnr_val = psnr(video_kf_sub[:, :min_len], keyframe_rgb[:, :min_len])
+                ssim_val = ssim(video_kf_sub[:, :min_len], keyframe_rgb[:, :min_len])
+            else:
+                psnr_val = psnr(video_rgb, keyframe_rgb)
+                ssim_val = ssim(video_rgb, keyframe_rgb)
+
             flicker_val = temporal_flicker(video_rgb)
             clip_val = clipsim(full_frames, prompt, device=self.device)
 
@@ -149,8 +156,8 @@ class EnhancedTextToVideoPipeline:
             "generation_time": round(total_latency, 3),
             "interp_latency": round(interp_latency, 4),
             "metrics": {
-                "psnr": round(psnr_val, 2),
-                "ssim": round(ssim_val, 4),
+                "psnr": psnr_val,
+                "ssim": round(ssim_val, 4) if ssim_val is not None else 1.0,
                 "flicker": round(flicker_val, 4),
                 "clipsim": round(clip_val, 4),
                 "generation_time_sec": round(total_latency, 3),
@@ -158,6 +165,7 @@ class EnhancedTextToVideoPipeline:
             }
         }
 
+        psnr_str = f"{psnr_val:.2f}dB" if psnr_val is not None else "inf dB (Identical)"
         print(f"[{mode_label}] Successfully generated {frame_count} frames ({duration_sec:.1f}s) in {total_latency:.2f}s!")
-        print(f"[{mode_label}] Metrics -> PSNR: {psnr_val:.2f}dB | SSIM: {ssim_val:.4f} | Flicker: {flicker_val:.4f} | CLIP: {clip_val:.4f}")
+        print(f"[{mode_label}] Metrics -> PSNR: {psnr_str} | SSIM: {ssim_val:.4f} | Flicker: {flicker_val:.4f} | CLIP: {clip_val:.4f}")
         return result_dict

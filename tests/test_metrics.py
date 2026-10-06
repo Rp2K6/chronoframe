@@ -6,7 +6,16 @@ from utils.metrics import psnr, ssim, temporal_flicker, clipsim
 
 def test_psnr_identical():
     a = torch.rand(1, 4, 3, 16, 16)
-    assert psnr(a, a) == float("inf")
+    # When MSE is 0 (identical inputs), psnr returns None (JSON null) to prevent non-standard Infinity tokens in API
+    assert psnr(a, a) is None
+
+
+def test_psnr_different():
+    a = torch.rand(1, 4, 3, 16, 16)
+    b = torch.rand(1, 4, 3, 16, 16)
+    val = psnr(a, b)
+    assert val is not None
+    assert val > 0.0
 
 
 def test_ssim_identical():
@@ -16,13 +25,11 @@ def test_ssim_identical():
 
 
 def test_temporal_flicker():
-    # Constant video across time should have 0.0 temporal flicker
     frame = torch.rand(1, 1, 3, 16, 16)
     smooth_video = frame.repeat(1, 5, 1, 1, 1)
     flicker_score = temporal_flicker(smooth_video)
     assert abs(flicker_score) < 1e-6, f"Smooth video flicker should be 0, got {flicker_score}"
 
-    # Random video across time should have non-zero flicker
     random_video = torch.rand(1, 5, 3, 16, 16)
     assert temporal_flicker(random_video) > 0.0
 

@@ -1,8 +1,15 @@
 """Flask Web Server for ChronoFrame Interactive UI."""
 import os
+import sys
 import time
 import uuid
+import math
 import threading
+from werkzeug.utils import secure_filename
+
+# Add parent directory to sys.path so models and utils can be imported cleanly
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 
@@ -15,26 +22,53 @@ CORS(app)
 # Pipeline Singleton
 pipeline = EnhancedTextToVideoPipeline()
 
-# In-Memory Job Storage
+# In-Memory Job Storage with Thread Safety
 jobs = {}
+jobs_lock = threading.Lock()
+
+
+def sanitize_json_obj(obj):
+    """Recursively converts any float Inf / NaN values into None for standard RFC 8259 JSON compliance."""
+    if isinstance(obj, float):
+        if math.isinf(obj) or math.isnan(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: sanitize_json_obj(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [sanitize_json_obj(v) for v in obj]
+    return obj
+
+
+def parse_int_param(val, default_val, min_val, max_val):
+    """Safely parses an integer parameter from input json with min/max boundary clamping."""
+    try:
+        if val is None:
+            return default_val
+        val_int = int(val)
+        return max(min_val, min(max_val, val_int))
+    except (ValueError, TypeError):
+        return default_val
 
 
 def run_pipeline_job(job_id: str, prompt: str, mode: str, num_keyframes: int, resolution: int, fps: int):
-    jobs[job_id] = {
-        "job_id": job_id,
-        "status": "GENERATING KEYFRAMES",
-        "progress": 10,
-        "prompt": prompt,
-        "mode": mode,
-        "result": None,
-        "error": None,
-        "timestamp": time.time()
-    }
+    with jobs_lock:
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "GENERATING KEYFRAMES",
+            "progress": 10,
+            "prompt": prompt,
+            "mode": mode,
+            "result": None,
+            "error": None,
+            "timestamp": time.time()
+        }
 
     def callback(stage: str, pct: int):
-        if job_id in jobs:
-            jobs[job_id]["status"] = stage
-            jobs[job_id]["progress"] = pct
+        with jobs_lock:
+            if job_id in jobs:
+                jobs[job_id]["status"] = stage
+                jobs[job_id]["progress"] = pct
 
     try:
         res_dir = os.path.abspath("outputs")
@@ -52,12 +86,9 @@ def run_pipeline_job(job_id: str, prompt: str, mode: str, num_keyframes: int, re
             callback=callback
         )
 
-        # Encode keyframes to base64 for direct UI display
         kf_b64 = [frame_to_base64(kf) for kf in res["keyframes"]]
 
-        jobs[job_id]["status"] = "COMPLETE"
-        jobs[job_id]["progress"] = 100
-        jobs[job_id]["result"] = {
+        result_obj = {
             "mode": res["mode"],
             "mode_label": res["mode_label"],
             "prompt": res["prompt"],
@@ -71,9 +102,16 @@ def run_pipeline_job(job_id: str, prompt: str, mode: str, num_keyframes: int, re
             "interp_latency": res["interp_latency"],
             "metrics": res["metrics"]
         }
+
+        with jobs_lock:
+            jobs[job_id]["status"] = "COMPLETE"
+            jobs[job_id]["progress"] = 100
+            jobs[job_id]["result"] = sanitize_json_obj(result_obj)
+
     except Exception as e:
-        jobs[job_id]["status"] = "ERROR"
-        jobs[job_id]["error"] = str(e)
+        with jobs_lock:
+            jobs[job_id]["status"] = "ERROR"
+            jobs[job_id]["error"] = str(e)
         print(f"[Job Error] {job_id}: {e}")
 
 
@@ -85,11 +123,19 @@ def index():
 @app.route("/api/generate", methods=["POST"])
 def api_generate():
     data = request.json or {}
-    prompt = data.get("prompt", "A panda making latte art").strip()
-    mode = data.get("mode", "proposed").lower()
-    keyframes = int(data.get("keyframes", 4))
-    resolution = int(data.get("resolution", 256))
-    fps = int(data.get("fps", 8))
+    
+    # Robust Input Validation & Parsing
+    prompt = str(data.get("prompt") or "A panda making latte art").strip()
+    if not prompt:
+        prompt = "A panda making latte art"
+        
+    mode = str(data.get("mode") or "proposed").lower()
+    if mode not in ["proposed", "chronoframe", "baseline"]:
+        mode = "proposed"
+
+    keyframes = parse_int_param(data.get("keyframes"), 4, 1, 8)
+    resolution = parse_int_param(data.get("resolution"), 256, 64, 512)
+    fps = parse_int_param(data.get("fps"), 8, 1, 60)
 
     job_id = str(uuid.uuid4())
     thread = threading.Thread(
@@ -99,30 +145,35 @@ def api_generate():
     )
     thread.start()
 
-    return jsonify({"job_id": job_id, "status": "GENERATING KEYFRAMES", "progress": 10})
+    return jsonify(sanitize_json_obj({"job_id": job_id, "status": "GENERATING KEYFRAMES", "progress": 10}))
 
 
 @app.route("/api/status/<job_id>", methods=["GET"])
 def api_status(job_id):
-    job = jobs.get(job_id)
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({
-        "job_id": job_id,
-        "status": job["status"],
-        "progress": job["progress"],
-        "error": job["error"],
-        "result": job["result"]
-    })
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        response_data = {
+            "job_id": job_id,
+            "status": job["status"],
+            "progress": job["progress"],
+            "error": job["error"],
+            "result": job["result"]
+        }
+    return jsonify(sanitize_json_obj(response_data))
 
 
 @app.route("/api/compare", methods=["POST"])
 def api_compare():
     data = request.json or {}
-    prompt = data.get("prompt", "A panda making latte art").strip()
-    keyframes = int(data.get("keyframes", 4))
-    resolution = int(data.get("resolution", 256))
-    fps = int(data.get("fps", 8))
+    prompt = str(data.get("prompt") or "A panda making latte art").strip()
+    if not prompt:
+        prompt = "A panda making latte art"
+
+    keyframes = parse_int_param(data.get("keyframes"), 4, 1, 8)
+    resolution = parse_int_param(data.get("resolution"), 256, 64, 512)
+    fps = parse_int_param(data.get("fps"), 8, 1, 60)
 
     res_dir = os.path.abspath("outputs")
     os.makedirs(res_dir, exist_ok=True)
@@ -133,7 +184,7 @@ def api_compare():
     res_baseline = pipeline.generate(prompt=prompt, mode="baseline", num_keyframes=keyframes, resolution=(resolution, resolution), fps=fps, output_path=out_b)
     res_proposed = pipeline.generate(prompt=prompt, mode="proposed", num_keyframes=keyframes, resolution=(resolution, resolution), fps=fps, output_path=out_p)
 
-    return jsonify({
+    compare_res = {
         "baseline": {
             "mode": "baseline",
             "video_url": "/outputs/compare_baseline.mp4",
@@ -146,17 +197,25 @@ def api_compare():
             "metrics": res_proposed["metrics"],
             "generation_time": res_proposed["generation_time"]
         }
-    })
+    }
+    return jsonify(sanitize_json_obj(compare_res))
 
 
 @app.route("/outputs/<filename>", methods=["GET"])
 def serve_output(filename):
     res_dir = os.path.abspath("outputs")
-    file_path = os.path.join(res_dir, filename)
+    
+    # Security: Prevent Directory Traversal Attacks
+    safe_name = secure_filename(filename)
+    if not safe_name or safe_name != filename:
+        return jsonify({"error": "Invalid filename"}), 400
+        
+    file_path = os.path.join(res_dir, safe_name)
     if not os.path.exists(file_path):
         return jsonify({"error": "File not found"}), 404
+
     download = request.args.get("download", "0") == "1"
-    return send_file(file_path, as_attachment=download, download_name=filename)
+    return send_file(file_path, as_attachment=download, download_name=safe_name)
 
 
 if __name__ == "__main__":

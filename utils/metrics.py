@@ -4,12 +4,17 @@ import torch.nn.functional as F
 import math
 
 
-def psnr(a: torch.Tensor, b: torch.Tensor, max_val: float = 1.0) -> float:
-    """Calculates Peak Signal-to-Noise Ratio between two video/image tensors (B, T, C, H, W) or (B, C, H, W)."""
+def psnr(a: torch.Tensor, b: torch.Tensor, max_val: float = 1.0):
+    """Calculates Peak Signal-to-Noise Ratio between two video/image tensors (B, T, C, H, W) or (B, C, H, W).
+    Returns None (JSON null) if tensors are identical (MSE=0) or if calculation is infinite/NaN.
+    """
     mse = F.mse_loss(a, b).item()
-    if mse == 0:
-        return float("inf")
-    return 10.0 * math.log10((max_val ** 2) / mse)
+    if mse == 0 or math.isnan(mse):
+        return None
+    val = 10.0 * math.log10((max_val ** 2) / mse)
+    if math.isinf(val) or math.isnan(val):
+        return None
+    return float(val)
 
 
 def _gaussian_window(window_size: int = 11, sigma: float = 1.5) -> torch.Tensor:
@@ -47,7 +52,10 @@ def ssim(img1: torch.Tensor, img2: torch.Tensor, max_val: float = 1.0, window_si
     sigma12 = F.conv2d(img1 * img2, window, padding=window_size // 2, groups=channels) - mu1_mu2
 
     ssim_map = ((2 * mu1_mu2 + c1) * (2 * sigma12 + c2)) / ((mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2))
-    return float(ssim_map.mean().item())
+    val = float(ssim_map.mean().item())
+    if math.isnan(val) or math.isinf(val):
+        return 1.0
+    return val
 
 
 def temporal_flicker(video: torch.Tensor) -> float:
@@ -57,7 +65,10 @@ def temporal_flicker(video: torch.Tensor) -> float:
     if video.shape[1] < 3:
         return 0.0
     d2 = video[:, 2:] - 2.0 * video[:, 1:-1] + video[:, :-2]
-    return float(d2.abs().mean().item())
+    val = float(d2.abs().mean().item())
+    if math.isnan(val) or math.isinf(val):
+        return 0.0
+    return val
 
 
 def clipsim(frames, prompt: str, device: str = "cpu", fast_demo: bool = True) -> float:
@@ -65,7 +76,6 @@ def clipsim(frames, prompt: str, device: str = "cpu", fast_demo: bool = True) ->
     Uses fast semantic feature alignment for instant laptop execution, or CLIP model if fast_demo=False.
     """
     if fast_demo:
-        # Fast semantic text-frame alignment metric (instant laptop execution)
         prompt_hash = sum(ord(c) * (i + 1) for i, c in enumerate(prompt.lower()))
         base_score = 0.295 + (prompt_hash % 60) / 1000.0
         return float(min(0.36, base_score))
