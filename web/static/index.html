@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChronoFrame — Text-to-Video Framework with Temporal Consistency</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <div class="brand-icon">CF</div>
+        <div>
+          <h1 class="brand-title">ChronoFrame</h1>
+          <p class="brand-subtitle">Enhanced Text-to-Video Generation Pipeline (ImproveYourVideos Architecture)</p>
+        </div>
+      </div>
+      <div class="badge-device" id="deviceBadge">DEVICE: CPU / AUTO</div>
+    </header>
+
+    <!-- Main Grid -->
+    <div class="main-grid">
+      <!-- Left Column: Controls -->
+      <div class="left-col">
+        <div class="glass-card">
+          <h2 class="card-title">⚙️ Generation Controls</h2>
+
+          <div class="form-group">
+            <label for="promptInput">Text Prompt</label>
+            <textarea id="promptInput" class="prompt-input" placeholder="Describe the video you want to generate...">A panda making latte art</textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Pipeline Architecture Mode</label>
+            <div class="mode-selector">
+              <button type="button" class="mode-btn active" id="btnModeProposed" onclick="selectMode('proposed')">ChronoFrame</button>
+              <button type="button" class="mode-btn" id="btnModeBaseline" onclick="selectMode('baseline')">Baseline (MFI)</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Parameters</label>
+            <div class="config-grid">
+              <div>
+                <label>Keyframes</label>
+                <select id="keyframesSelect" class="config-select">
+                  <option value="4" selected>4 (→13f)</option>
+                  <option value="6">6 (→21f)</option>
+                </select>
+              </div>
+              <div>
+                <label>Resolution</label>
+                <select id="resSelect" class="config-select">
+                  <option value="256" selected>256×256</option>
+                  <option value="128">128×128</option>
+                </select>
+              </div>
+              <div>
+                <label>FPS</label>
+                <select id="fpsSelect" class="config-select">
+                  <option value="8" selected>8 FPS</option>
+                  <option value="12">12 FPS</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <button id="btnGenerate" class="btn-primary" onclick="startGeneration()">
+            <span>✨ Generate Video</span>
+          </button>
+
+          <button id="btnCompare" class="btn-secondary" onclick="runComparison()">
+            📊 Run Baseline vs ChronoFrame Benchmark
+          </button>
+
+          <div class="status-tracker" id="statusBox" style="display: none;">
+            <div class="status-header">
+              <span id="statusStage">IDLE</span>
+              <span id="statusPct">0%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" id="progressBar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Video Output & Analytics -->
+      <div class="right-col">
+        <!-- Video Display Container -->
+        <div class="glass-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h2 class="card-title" style="margin-bottom: 0;">🎬 Generated Video Output</h2>
+            <div id="videoActions" style="display: none; gap: 0.5rem;">
+              <a id="btnDownload" class="btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; text-decoration: none;" download>
+                ⬇️ Download MP4
+              </a>
+              <button class="btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; width: auto;" onclick="startGeneration()">
+                🔄 Regenerate
+              </button>
+            </div>
+          </div>
+
+          <div class="video-display-area" id="videoContainer">
+            <div class="video-placeholder" id="videoPlaceholder">
+              <div class="video-placeholder-icon">📽️</div>
+              <p style="font-weight: 500; color: var(--text-muted);">No video generated yet</p>
+              <p style="font-size: 0.8rem; margin-top: 0.25rem;">Enter a text prompt and click Generate Video to begin.</p>
+            </div>
+            <video id="videoPlayer" class="generated-video" controls autoplay loop style="display: none;"></video>
+          </div>
+
+          <!-- Keyframe Preview Strip -->
+          <div class="keyframe-strip" id="keyframeStrip" style="display: none;">
+            <label style="margin-bottom: 0.5rem;">Text-Conditioned Keyframes ($T=4$ Keyframes $\to$ $4T-3=13$ Frames Expansion)</label>
+            <div class="keyframe-grid" id="keyframeGrid"></div>
+          </div>
+
+          <!-- Metrics Table -->
+          <div id="metricsBox" style="display: none; margin-top: 1rem;">
+            <h3 class="card-title" style="font-size: 0.95rem;">📈 Empirical Metrics & Performance</h3>
+            <table class="metrics-table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Value</th>
+                  <th>Description / Significance</th>
+                </tr>
+              </thead>
+              <tbody id="metricsTableBody"></tbody>
+            </table>
+          </div>
+
+          <!-- Comparison View Box -->
+          <div id="compViewBox" style="display: none; margin-top: 1.5rem;">
+            <h3 class="card-title" style="font-size: 0.95rem;">⚔️ Side-by-Side Mode Benchmark</h3>
+            <div class="comparison-grid">
+              <div class="comp-card">
+                <div class="comp-title">Baseline Mode (MFI + 2D Decoder)</div>
+                <video id="compVideoBaseline" controls loop width="100%" style="border-radius: 8px; margin-bottom: 0.5rem;"></video>
+                <div id="compMetricsBaseline" style="font-size: 0.8rem; color: var(--text-muted);"></div>
+              </div>
+              <div class="comp-card">
+                <div class="comp-title">ChronoFrame Mode (Joint + Temporal 3D)</div>
+                <video id="compVideoProposed" controls loop width="100%" style="border-radius: 8px; margin-bottom: 0.5rem;"></video>
+                <div id="compMetricsProposed" style="font-size: 0.8rem; color: var(--accent-cyan); font-weight: 500;"></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

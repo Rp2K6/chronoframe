@@ -1,0 +1,33 @@
+# Byte-compiled / Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Scratch & Temporary directories
+scratch/
+.system_generated/
+*.log
+*.tmp
+
+# Environment variables & secrets
+.env
+*.pem
+*.key
+*.cert
+
+# Large output files / videos (optional, keep small demo clips if needed)
+outputs/*.mp4
+!outputs/.gitkeep
+test.mp4
+
+# IDE files
+.vscode/
+.idea/
+*.swp
